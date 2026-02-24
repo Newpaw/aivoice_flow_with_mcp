@@ -19,11 +19,12 @@ Server endpoint: `http://localhost:8000/mcp`
 
 1. Ask user for `name` and `rodne_cislo_suffix` (last digits only).
 2. Call `authenticate_user(name, rodne_cislo_suffix, phone_number="731527923")`
-3. Call `download_user_info()`
-4. Call `prepare_new_offer()`
-5. Ask user if they accept the offer.
-6. Call `submit_offer_to_external_service(accept_offer=true|false, persist_to_db=true|false)`
-7. Optional: `get_flow_status()` and `logout()`
+3. Save returned `conversation_id`
+4. Call `download_user_info(conversation_id="<value from authenticate_user>")`
+5. Call `prepare_new_offer(conversation_id="<same value>")`
+6. Ask user if they accept the offer.
+7. Call `submit_offer_to_external_service(accept_offer=true|false, persist_to_db=true|false, conversation_id="<same value>")`
+8. Optional: `get_flow_status(conversation_id=...)` and `logout(conversation_id=...)`
 
 Agent-known mock phone number for authentication:
 - `731527923`
@@ -46,3 +47,9 @@ Optional env vars:
 - `MCP_PORT` (default `8000`)
 - `MCP_PATH` (default `/mcp`)
 - `MOCK_DB_PATH` (default `data/mock_external_service.db`)
+
+## Session compatibility
+
+Some MCP clients recreate MCP session between tool calls. In that case, keep and pass
+the `conversation_id` returned by `authenticate_user` to all following tools.
+This server then restores flow state from fallback storage and continues the flow.

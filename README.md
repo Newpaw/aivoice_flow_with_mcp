@@ -1,10 +1,11 @@
 # MCP Internet Offer Flow Server
 
 Simple FastMCP server over Streamable HTTP transport with:
-- authentication by `name` + `rodne_cislo_suffix` + phone number
+- authentication by `rodne_cislo_suffix` only
 - mocked user info download
 - new internet offer flow (`100 Mbps -> 250 Mbps`)
 - external service submission (mock response or SQLite persistence)
+- admin web UI for mock user management and DB inspection
 
 ## Run locally
 
@@ -17,8 +18,8 @@ Server endpoint: `http://localhost:8000/mcp`
 
 ## Tool flow
 
-1. Ask user for `name` and `rodne_cislo_suffix` (last digits only).
-2. Call `authenticate_user(name, rodne_cislo_suffix, phone_number="731527923")`
+1. Ask user for `rodne_cislo_suffix` (last digits only).
+2. Call `authenticate_user(rodne_cislo_suffix="1234")`
 3. Save returned `conversation_id`
 4. Call `download_user_info(conversation_id="<value from authenticate_user>")`
 5. Call `prepare_new_offer(conversation_id="<same value>")`
@@ -30,10 +31,30 @@ Agent-known mock phone number for authentication:
 - `731527923`
 
 Mock users:
-- `Jan Novak` + suffix `1234`
-- `Petra Svobodova` + suffix `5678`
+- `Jan Novak` -> suffix `1234`
+- `Petra Svobodova` -> suffix `5678`
 
 If `persist_to_db=true`, records are stored in `data/mock_external_service.db`.
+
+## Admin website
+
+Open root URL in browser:
+- `http://localhost:8000/`
+
+Features:
+- add and delete mock users
+- search/filter mock users
+- inspect saved upgrade requests
+- export users as JSON and requests as CSV
+- dashboard stats and DB path visibility
+
+Admin API routes:
+- `GET /admin/api/overview?limit=300`
+- `GET /admin/api/users`
+- `POST /admin/api/users`
+- `DELETE /admin/api/users/{customer_id}`
+- `GET /admin/api/requests?limit=300`
+- `GET /health`
 
 ## Docker
 
@@ -46,6 +67,9 @@ Optional env vars:
 - `MCP_HOST` (default `0.0.0.0`)
 - `MCP_PORT` (default `8000`)
 - `MCP_PATH` (default `/mcp`)
+- `MCP_TRANSPORT` (default `streamable-http`)
+- `MCP_JSON_RESPONSE` (default `false`)
+- `MCP_STATELESS_HTTP` (default `false`)
 - `MOCK_DB_PATH` (default `data/mock_external_service.db`)
 
 ## Session compatibility

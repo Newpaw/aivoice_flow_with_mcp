@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY mcp_server.py ./
+COPY mcp_server.py index.html ./
 RUN pip install --no-cache-dir "fastmcp>=3.0.2"
 
 RUN mkdir -p /app/data

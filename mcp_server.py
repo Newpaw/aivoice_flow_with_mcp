@@ -9,14 +9,16 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 
 
 mcp = FastMCP(
     "Internet Offer Flow Server",
     instructions=(
         "Use this flow in order: "
-        "1) ask user for full name and rodne_cislo_suffix (last digits), "
-        "2) call authenticate_user with those values plus phone_number=731527923, "
+        "1) ask user for rodne_cislo_suffix (last digits), "
+        "2) call authenticate_user(rodne_cislo_suffix=...), "
         "3) remember returned conversation_id and pass it to all next tools, "
         "4) call download_user_info(conversation_id=...), "
         "5) call prepare_new_offer(conversation_id=...), "
@@ -29,10 +31,12 @@ mcp = FastMCP(
 
 
 AGENT_KNOWN_PHONE_NUMBER = "731527923"
+BASE_DIR = Path(__file__).resolve().parent
+INDEX_HTML_PATH = BASE_DIR / "index.html"
+DB_PATH = Path(os.getenv("MOCK_DB_PATH", "data/mock_external_service.db"))
 
-
-MOCK_USERS: dict[str, dict[str, Any]] = {
-    "jan novak": {
+DEFAULT_MOCK_USERS: list[dict[str, Any]] = [
+    {
         "customer_id": "u-1001",
         "name": "Jan Novak",
         "rodne_cislo_suffix": "1234",
@@ -40,7 +44,7 @@ MOCK_USERS: dict[str, dict[str, Any]] = {
         "email": "jan.novak@example.com",
         "current_plan_mbps": 100,
     },
-    "petra svobodova": {
+    {
         "customer_id": "u-1002",
         "name": "Petra Svobodova",
         "rodne_cislo_suffix": "5678",
@@ -48,20 +52,18 @@ MOCK_USERS: dict[str, dict[str, Any]] = {
         "email": "petra.svobodova@example.com",
         "current_plan_mbps": 100,
     },
-}
+]
 
 # Fallback cross-call state for clients that do not reliably keep MCP sessions.
 CONVERSATION_STATE: dict[str, dict[str, Any]] = {}
 
-DB_PATH = Path(os.getenv("MOCK_DB_PATH", "data/mock_external_service.db"))
-
-
-def _normalize_name(name: str) -> str:
-    return " ".join(name.strip().lower().split())
-
 
 def _normalize_phone(phone_number: str) -> str:
     return "".join(ch for ch in phone_number if ch.isdigit())
+
+
+def _normalize_suffix(rodne_cislo_suffix: str) -> str:
+    return "".join(ch for ch in rodne_cislo_suffix if ch.isdigit())
 
 
 def _normalize_conversation_id(conversation_id: str | None) -> str | None:
@@ -96,48 +98,42 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _save_conversation_snapshot(ctx: Context, conversation_id: str | None) -> None:
-    if not conversation_id:
-        return
-    snapshot: dict[str, Any] = {}
-    for key in ("auth", "flow", "prepared_offer", "last_submission"):
-        value = await ctx.get_state(key)
-        if value is not None:
-            snapshot[key] = deepcopy(value)
-    CONVERSATION_STATE[conversation_id] = snapshot
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def _restore_conversation_snapshot(ctx: Context, conversation_id: str | None) -> bool:
-    if not conversation_id:
-        return False
-    snapshot = CONVERSATION_STATE.get(conversation_id)
-    if not snapshot:
-        return False
-    for key, value in snapshot.items():
-        await ctx.set_state(key, deepcopy(value))
-    return True
-
-
-async def _require_auth(
-    ctx: Context, conversation_id: str | None = None
-) -> tuple[dict[str, Any], str | None]:
-    normalized_conversation_id = _normalize_conversation_id(conversation_id)
-    auth_state = await ctx.get_state("auth")
-    if (not auth_state or not auth_state.get("authenticated")) and normalized_conversation_id:
-        await _restore_conversation_snapshot(ctx, normalized_conversation_id)
-        auth_state = await ctx.get_state("auth")
-
-    if not auth_state or not auth_state.get("authenticated"):
-        raise ValueError(
-            "Unauthorized. First call authenticate_user(name, rodne_cislo_suffix, "
-            "phone_number) and keep returned conversation_id for next tool calls."
-        )
-    return auth_state, normalized_conversation_id
+def _row_to_user(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "customer_id": row["customer_id"],
+        "name": row["name"],
+        "rodne_cislo_suffix": row["rodne_cislo_suffix"],
+        "phone_number": row["phone_number"],
+        "email": row["email"],
+        "current_plan_mbps": row["current_plan_mbps"],
+        "created_at": row["created_at"],
+    }
 
 
 def _ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mock_users (
+                customer_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                rodne_cislo_suffix TEXT NOT NULL UNIQUE,
+                phone_number TEXT NOT NULL,
+                email TEXT NOT NULL,
+                current_plan_mbps INTEGER NOT NULL CHECK (current_plan_mbps > 0),
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS external_upgrade_requests (
@@ -152,6 +148,180 @@ def _ensure_db() -> None:
             )
             """
         )
+        count = conn.execute("SELECT COUNT(*) FROM mock_users").fetchone()[0]
+        if count == 0:
+            now = _utc_now_iso()
+            conn.executemany(
+                """
+                INSERT INTO mock_users (
+                    customer_id, name, rodne_cislo_suffix, phone_number, email,
+                    current_plan_mbps, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        user["customer_id"],
+                        user["name"],
+                        user["rodne_cislo_suffix"],
+                        user["phone_number"],
+                        user["email"],
+                        user["current_plan_mbps"],
+                        now,
+                    )
+                    for user in DEFAULT_MOCK_USERS
+                ],
+            )
+
+
+def _list_mock_users() -> list[dict[str, Any]]:
+    _ensure_db()
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT customer_id, name, rodne_cislo_suffix, phone_number, email,
+                   current_plan_mbps, created_at
+            FROM mock_users
+            ORDER BY created_at DESC, name ASC
+            """
+        ).fetchall()
+    return [_row_to_user(row) for row in rows]
+
+
+def _get_user_by_suffix(rodne_cislo_suffix: str) -> dict[str, Any] | None:
+    _ensure_db()
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT customer_id, name, rodne_cislo_suffix, phone_number, email,
+                   current_plan_mbps, created_at
+            FROM mock_users
+            WHERE rodne_cislo_suffix = ?
+            """,
+            (rodne_cislo_suffix,),
+        ).fetchone()
+    return _row_to_user(row) if row else None
+
+
+def _get_user_by_customer_id(customer_id: str) -> dict[str, Any] | None:
+    _ensure_db()
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT customer_id, name, rodne_cislo_suffix, phone_number, email,
+                   current_plan_mbps, created_at
+            FROM mock_users
+            WHERE customer_id = ?
+            """,
+            (customer_id,),
+        ).fetchone()
+    return _row_to_user(row) if row else None
+
+
+def _create_mock_user(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name", "")).strip()
+    suffix = _normalize_suffix(str(payload.get("rodne_cislo_suffix", "")))
+    phone_number = _normalize_phone(str(payload.get("phone_number", AGENT_KNOWN_PHONE_NUMBER)))
+    email = str(payload.get("email", "")).strip().lower()
+    current_plan_raw = payload.get("current_plan_mbps", 100)
+    customer_id = str(payload.get("customer_id", "")).strip() or f"u-{uuid.uuid4().hex[:8]}"
+
+    if not name:
+        raise ValueError("name is required")
+    if len(suffix) < 4 or len(suffix) > 10:
+        raise ValueError("rodne_cislo_suffix must contain 4-10 digits")
+    if not phone_number:
+        raise ValueError("phone_number is required")
+    if not email:
+        raise ValueError("email is required")
+
+    try:
+        current_plan_mbps = int(current_plan_raw)
+    except (TypeError, ValueError):
+        raise ValueError("current_plan_mbps must be a number") from None
+    if current_plan_mbps <= 0:
+        raise ValueError("current_plan_mbps must be > 0")
+
+    _ensure_db()
+    now = _utc_now_iso()
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.execute(
+            """
+            INSERT INTO mock_users (
+                customer_id, name, rodne_cislo_suffix, phone_number, email,
+                current_plan_mbps, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_id,
+                name,
+                suffix,
+                phone_number,
+                email,
+                current_plan_mbps,
+                now,
+            ),
+        )
+    return {
+        "customer_id": customer_id,
+        "name": name,
+        "rodne_cislo_suffix": suffix,
+        "phone_number": phone_number,
+        "email": email,
+        "current_plan_mbps": current_plan_mbps,
+        "created_at": now,
+    }
+
+
+def _delete_mock_user(customer_id: str) -> bool:
+    _ensure_db()
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        cursor = conn.execute("DELETE FROM mock_users WHERE customer_id = ?", (customer_id,))
+    return cursor.rowcount > 0
+
+
+def _list_saved_requests(limit: int = 300) -> list[dict[str, Any]]:
+    _ensure_db()
+    safe_limit = max(1, min(limit, 5000))
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT request_id, created_at, customer_id, customer_name, current_plan_mbps,
+                   offered_plan_mbps, status, external_reference
+            FROM external_upgrade_requests
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _db_stats() -> dict[str, Any]:
+    _ensure_db()
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        users_count = conn.execute("SELECT COUNT(*) FROM mock_users").fetchone()[0]
+        requests_count = conn.execute(
+            "SELECT COUNT(*) FROM external_upgrade_requests"
+        ).fetchone()[0]
+        latest_request = conn.execute(
+            """
+            SELECT request_id, created_at, customer_name, offered_plan_mbps, status
+            FROM external_upgrade_requests
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return {
+        "users_count": users_count,
+        "requests_count": requests_count,
+        "latest_request": dict(latest_request) if latest_request else None,
+        "db_path": str(DB_PATH),
+    }
 
 
 def _write_request_to_db(
@@ -163,7 +333,7 @@ def _write_request_to_db(
     external_reference = f"EXT-{uuid.uuid4().hex[:10].upper()}"
     created_at = _utc_now_iso()
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
         conn.execute(
             """
             INSERT INTO external_upgrade_requests (
@@ -202,30 +372,67 @@ def _mock_external_call() -> dict[str, Any]:
     }
 
 
+async def _save_conversation_snapshot(ctx: Context, conversation_id: str | None) -> None:
+    if not conversation_id:
+        return
+    snapshot: dict[str, Any] = {}
+    for key in ("auth", "flow", "prepared_offer", "last_submission"):
+        value = await ctx.get_state(key)
+        if value is not None:
+            snapshot[key] = deepcopy(value)
+    CONVERSATION_STATE[conversation_id] = snapshot
+
+
+async def _restore_conversation_snapshot(ctx: Context, conversation_id: str | None) -> bool:
+    if not conversation_id:
+        return False
+    snapshot = CONVERSATION_STATE.get(conversation_id)
+    if not snapshot:
+        return False
+    for key, value in snapshot.items():
+        await ctx.set_state(key, deepcopy(value))
+    return True
+
+
+def _require_customer(auth_state: dict[str, Any]) -> dict[str, Any]:
+    customer_id = str(auth_state.get("customer_id", ""))
+    if not customer_id:
+        raise ValueError("Invalid auth state. Restart authentication.")
+    customer = _get_user_by_customer_id(customer_id)
+    if not customer:
+        raise ValueError(
+            "Authenticated customer no longer exists. Run authenticate_user again."
+        )
+    return customer
+
+
+async def _require_auth(
+    ctx: Context, conversation_id: str | None = None
+) -> tuple[dict[str, Any], str | None]:
+    normalized_conversation_id = _normalize_conversation_id(conversation_id)
+    auth_state = await ctx.get_state("auth")
+    if (not auth_state or not auth_state.get("authenticated")) and normalized_conversation_id:
+        await _restore_conversation_snapshot(ctx, normalized_conversation_id)
+        auth_state = await ctx.get_state("auth")
+
+    if not auth_state or not auth_state.get("authenticated"):
+        raise ValueError(
+            "Unauthorized. First call authenticate_user(rodne_cislo_suffix=...) and "
+            "keep returned conversation_id for next tool calls."
+        )
+    return auth_state, normalized_conversation_id
+
+
 @mcp.tool
 async def authenticate_user(
-    name: Annotated[
-        str,
-        (
-            "Full user name (for example: 'Jan Novak'). Ask user for this value if "
-            "unknown."
-        ),
-    ],
     rodne_cislo_suffix: Annotated[
         str,
         (
-            "Last digits of rodne cislo. Ask user for this value. Use only suffix, "
-            "not full rodne cislo."
+            "Last digits of rodne cislo. This is the only authorization input. "
+            "Use suffix only, not full rodne cislo."
         ),
     ],
     ctx: Context,
-    phone_number: Annotated[
-        str,
-        (
-            "User phone number used for verification. The agent should use known "
-            "mock value 731527923 unless system context says otherwise."
-        ),
-    ] = AGENT_KNOWN_PHONE_NUMBER,
     conversation_id: Annotated[
         str | None,
         (
@@ -235,44 +442,34 @@ async def authenticate_user(
     ] = None,
 ) -> dict[str, Any]:
     """
-    Authenticate the user before any protected tool call.
-
-    When to call:
-    - Always first in the flow.
-
-    What to collect from user:
-    - `name`
-    - `rodne_cislo_suffix`
-    - Phone is already known to the agent as `731527923` (mock), so user input for
-      phone is not required.
-
-    How to call:
-    - `authenticate_user(name=<from user>, rodne_cislo_suffix=<from user>, phone_number="731527923")`
-
-    What you get:
-    - `authenticated=true` on success and a `customer_id`
-    - `conversation_id` that should be passed to the next tools
-    - On failure, clear reason and no access to protected tools.
+    Authenticate the user before any protected tool call using rodne_cislo_suffix only.
     """
-    user = MOCK_USERS.get(_normalize_name(name))
-    if not user:
-        return {"authenticated": False, "reason": "Unknown user name."}
+    suffix = _normalize_suffix(rodne_cislo_suffix)
+    if len(suffix) < 4 or len(suffix) > 10:
+        return {
+            "authenticated": False,
+            "reason": "rodne_cislo_suffix must contain 4-10 digits.",
+        }
 
-    if user["rodne_cislo_suffix"] != rodne_cislo_suffix.strip():
-        return {"authenticated": False, "reason": "Invalid rodne_cislo_suffix."}
+    customer = _get_user_by_suffix(suffix)
+    if not customer:
+        return {
+            "authenticated": False,
+            "reason": "Unknown rodne_cislo_suffix.",
+        }
 
-    if user["phone_number"] != _normalize_phone(phone_number):
-        return {"authenticated": False, "reason": "Invalid phone_number."}
-
-    resolved_conversation_id = _normalize_conversation_id(conversation_id) or _new_conversation_id()
+    resolved_conversation_id = (
+        _normalize_conversation_id(conversation_id) or _new_conversation_id()
+    )
 
     await ctx.set_state(
         "auth",
         {
             "authenticated": True,
-            "customer_id": user["customer_id"],
-            "name": user["name"],
-            "phone_number": user["phone_number"],
+            "customer_id": customer["customer_id"],
+            "name": customer["name"],
+            "rodne_cislo_suffix": customer["rodne_cislo_suffix"],
+            "phone_number": customer["phone_number"],
         },
     )
     await ctx.set_state("flow", _authenticated_flow_state())
@@ -280,9 +477,9 @@ async def authenticate_user(
 
     return {
         "authenticated": True,
-        "customer_id": user["customer_id"],
-        "name": user["name"],
-        "phone_number": user["phone_number"],
+        "customer_id": customer["customer_id"],
+        "name": customer["name"],
+        "rodne_cislo_suffix": customer["rodne_cislo_suffix"],
         "conversation_id": resolved_conversation_id,
         "next_step": "Call download_user_info(conversation_id=<returned_value>).",
     }
@@ -301,19 +498,9 @@ async def download_user_info(
 ) -> dict[str, Any]:
     """
     Download mocked customer profile after authentication.
-
-    When to call:
-    - After successful `authenticate_user`.
-
-    What to collect from user:
-    - Nothing new.
-
-    What you get:
-    - Customer profile, current plan speed, and contact info.
-    - This unlocks `prepare_new_offer`.
     """
     auth, resolved_conversation_id = await _require_auth(ctx, conversation_id)
-    customer = MOCK_USERS[_normalize_name(auth["name"])]
+    customer = _require_customer(auth)
 
     flow = await ctx.get_state("flow") or _authenticated_flow_state()
     flow["user_info_downloaded"] = True
@@ -344,24 +531,13 @@ async def prepare_new_offer(
 ) -> dict[str, Any]:
     """
     Prepare a fixed upgrade offer from 100 Mbps to 250 Mbps.
-
-    When to call:
-    - After `download_user_info`.
-
-    What to collect from user:
-    - Nothing before calling.
-    - After receiving the offer, ask user whether they accept it.
-
-    What you get:
-    - Offer object with speed upgrade details.
-    - Then call `submit_offer_to_external_service` with user's acceptance.
     """
     auth, resolved_conversation_id = await _require_auth(ctx, conversation_id)
+    customer = _require_customer(auth)
     flow = await ctx.get_state("flow") or _authenticated_flow_state()
     if not flow.get("user_info_downloaded"):
         raise ValueError("Flow error: call download_user_info before prepare_new_offer.")
 
-    customer = MOCK_USERS[_normalize_name(auth["name"])]
     offer = {
         "offer_id": f"offer-{uuid.uuid4().hex[:8]}",
         "customer_id": customer["customer_id"],
@@ -403,21 +579,9 @@ async def submit_offer_to_external_service(
 ) -> dict[str, Any]:
     """
     Final step: submit accepted offer to external service.
-
-    When to call:
-    - After `prepare_new_offer` and after user confirms acceptance.
-
-    What to collect from user:
-    - `accept_offer` confirmation (yes/no).
-
-    How to call:
-    - `accept_offer=True` if user agrees.
-    - `persist_to_db=True` to save in SQLite, otherwise use mock external response.
-
-    What you get:
-    - Final submission status and external reference ID.
     """
     auth, resolved_conversation_id = await _require_auth(ctx, conversation_id)
+    customer = _require_customer(auth)
     flow = await ctx.get_state("flow") or _authenticated_flow_state()
     if not flow.get("offer_prepared"):
         raise ValueError("Flow error: call prepare_new_offer before submission.")
@@ -429,14 +593,18 @@ async def submit_offer_to_external_service(
             "message": "Offer was not accepted. Nothing sent to external service.",
         }
 
-    customer = MOCK_USERS[_normalize_name(auth["name"])]
     offer = await ctx.get_state("prepared_offer")
     if not offer:
         raise ValueError("No prepared offer found in session state.")
 
-    external_result = (
-        _write_request_to_db(customer, offer) if persist_to_db else _mock_external_call()
-    )
+    try:
+        external_result = (
+            _write_request_to_db(customer, offer)
+            if persist_to_db
+            else _mock_external_call()
+        )
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"DB write failed: {exc}") from exc
 
     flow["submitted"] = True
     await ctx.set_state("flow", flow)
@@ -465,12 +633,6 @@ async def get_flow_status(
 ) -> dict[str, Any]:
     """
     Return current auth and process status for the current session.
-
-    When to call:
-    - Any time you need to recover flow state or debug what step is next.
-
-    What to collect from user:
-    - Nothing.
     """
     resolved_conversation_id = _normalize_conversation_id(conversation_id)
     flow = await ctx.get_state("flow")
@@ -503,12 +665,6 @@ async def logout(
 ) -> dict[str, Any]:
     """
     Reset session state (auth + flow + prepared offer).
-
-    When to call:
-    - End of conversation or when user wants to restart verification.
-
-    What to collect from user:
-    - Nothing.
     """
     for key in ("auth", "flow", "prepared_offer", "last_submission"):
         await ctx.delete_state(key)
@@ -517,11 +673,144 @@ async def logout(
     if resolved_conversation_id:
         CONVERSATION_STATE.pop(resolved_conversation_id, None)
 
-    return {"status": "ok", "message": "Session cleared.", "conversation_id": resolved_conversation_id}
+    return {
+        "status": "ok",
+        "message": "Session cleared.",
+        "conversation_id": resolved_conversation_id,
+    }
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def admin_index(_: Request) -> Response:
+    if not INDEX_HTML_PATH.exists():
+        return PlainTextResponse("index.html not found", status_code=500)
+    return FileResponse(INDEX_HTML_PATH)
+
+
+@mcp.custom_route("/index.html", methods=["GET"])
+async def admin_index_file(_: Request) -> Response:
+    if not INDEX_HTML_PATH.exists():
+        return PlainTextResponse("index.html not found", status_code=500)
+    return FileResponse(INDEX_HTML_PATH)
+
+
+@mcp.custom_route("/admin/api/overview", methods=["GET"])
+async def admin_overview(request: Request) -> Response:
+    errors: dict[str, str] = {}
+    limit_raw = request.query_params.get("limit", "300")
+    try:
+        limit = int(limit_raw)
+        if limit <= 0:
+            raise ValueError("limit must be > 0")
+    except Exception:
+        limit = 300
+        errors["limit"] = f"Invalid limit '{limit_raw}', using default 300."
+
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "partial": False,
+        "stats": None,
+        "users": [],
+        "requests": [],
+        "errors": errors,
+    }
+
+    try:
+        payload["stats"] = _db_stats()
+    except Exception as exc:
+        errors["stats"] = str(exc)
+
+    try:
+        payload["users"] = _list_mock_users()
+    except Exception as exc:
+        errors["users"] = str(exc)
+
+    try:
+        payload["requests"] = _list_saved_requests(limit=limit)
+    except Exception as exc:
+        errors["requests"] = str(exc)
+
+    if errors:
+        payload["status"] = "partial"
+        payload["partial"] = True
+
+    return JSONResponse(payload)
+
+
+@mcp.custom_route("/admin/api/users", methods=["GET"])
+async def admin_list_users(_: Request) -> Response:
+    try:
+        return JSONResponse({"users": _list_mock_users()})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@mcp.custom_route("/admin/api/users", methods=["POST"])
+async def admin_create_user(request: Request) -> Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    try:
+        user = _create_mock_user(payload)
+        return JSONResponse({"user": user}, status_code=201)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": "User with this customer_id or rodne_cislo_suffix already exists."},
+            status_code=409,
+        )
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@mcp.custom_route("/admin/api/users/{customer_id}", methods=["DELETE"])
+async def admin_delete_user(request: Request) -> Response:
+    customer_id = request.path_params.get("customer_id", "").strip()
+    if not customer_id:
+        return JSONResponse({"error": "customer_id is required"}, status_code=400)
+    try:
+        deleted = _delete_mock_user(customer_id)
+        if not deleted:
+            return JSONResponse({"error": "User not found"}, status_code=404)
+        return JSONResponse({"status": "deleted", "customer_id": customer_id})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@mcp.custom_route("/admin/api/requests", methods=["GET"])
+async def admin_list_requests(request: Request) -> Response:
+    try:
+        limit = int(request.query_params.get("limit", "300"))
+        return JSONResponse({"requests": _list_saved_requests(limit=limit)})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(_: Request) -> Response:
+    try:
+        stats = _db_stats()
+    except Exception as exc:
+        return JSONResponse({"status": "error", "error": str(exc)}, status_code=500)
+    return JSONResponse({"status": "ok", "db_path": stats["db_path"]})
 
 
 if __name__ == "__main__":
+    _ensure_db()
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "8000"))
     path = os.getenv("MCP_PATH", "/mcp")
-    mcp.run(transport="streamable-http", host=host, port=port, path=path)
+    transport = os.getenv("MCP_TRANSPORT", "streamable-http")
+    json_response = _env_bool("MCP_JSON_RESPONSE", default=False)
+    stateless_http = _env_bool("MCP_STATELESS_HTTP", default=False)
+    mcp.run(
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        json_response=json_response,
+        stateless_http=stateless_http,
+    )

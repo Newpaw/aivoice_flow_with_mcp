@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Voice MCP Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-0: #06141f;
+      --bg-1: #0b1f2e;
+      --bg-2: #123750;
+      --card: rgba(8, 21, 33, 0.88);
+      --line: rgba(150, 209, 255, 0.18);
+      --text: #e9f4ff;
+      --muted: #9fc0da;
+      --ok: #59d389;
+      --warn: #ffb75e;
+      --bad: #ff6f7d;
+      --accent: #63d8ff;
+      --accent-2: #80ffcf;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Space Grotesk", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 600px at 5% -10%, #1f4f7a 0%, transparent 65%),
+        radial-gradient(900px 520px at 95% -20%, #004d6e 0%, transparent 68%),
+        linear-gradient(160deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2));
+      letter-spacing: 0.01em;
+    }
+
+    .shell {
+      width: min(1280px, 95vw);
+      margin: 28px auto 34px auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .title-wrap {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px 18px;
+      backdrop-filter: blur(9px);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .bar-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(20, 46, 66, 0.8);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+      padding: 10px 13px;
+      cursor: pointer;
+      transition: 0.2s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(99, 216, 255, 0.4);
+      background: rgba(20, 62, 90, 0.92);
+    }
+
+    .button-ghost {
+      background: transparent;
+    }
+
+    .button-accent {
+      background: linear-gradient(120deg, #1d5878, #1f7086);
+      border-color: rgba(128, 255, 207, 0.35);
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(170px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      min-height: 92px;
+    }
+
+    .card .label {
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .card .value {
+      margin-top: 6px;
+      font-size: 1.65rem;
+      font-weight: 700;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 14px;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px 0;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--accent-2);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .field label {
+      font-size: 0.83rem;
+      color: var(--muted);
+    }
+
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: rgba(7, 25, 39, 0.9);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+      padding: 9px 10px;
+    }
+
+    input:focus, select:focus {
+      outline: 2px solid rgba(99, 216, 255, 0.25);
+      border-color: rgba(99, 216, 255, 0.35);
+    }
+
+    .tip {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.35;
+      margin-top: 4px;
+    }
+
+    .status {
+      margin-top: 10px;
+      min-height: 18px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.82rem;
+    }
+
+    .status.ok {
+      color: var(--ok);
+    }
+
+    .status.bad {
+      color: var(--bad);
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .section-tools {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.82rem;
+    }
+
+    .table-wrap {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: auto;
+      max-height: 420px;
+      background: rgba(5, 19, 31, 0.95);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 9px 10px;
+      border-bottom: 1px solid rgba(140, 196, 238, 0.11);
+      font-size: 0.88rem;
+      vertical-align: top;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: rgba(10, 30, 45, 0.96);
+      color: var(--accent);
+      font-size: 0.8rem;
+      z-index: 1;
+    }
+
+    .action-delete {
+      color: #ffe9ec;
+      background: rgba(127, 22, 44, 0.55);
+      border-color: rgba(255, 111, 125, 0.45);
+      padding: 6px 8px;
+      font-size: 0.8rem;
+    }
+
+    .grid-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .foot {
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-align: right;
+      font-family: "IBM Plex Mono", monospace;
+    }
+
+    @media (max-width: 1050px) {
+      .cards {
+        grid-template-columns: repeat(2, minmax(160px, 1fr));
+      }
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="title-wrap">
+      <div>
+        <h1>AI Voice MCP Admin Console</h1>
+        <div class="subtitle">Manage mock users and inspect saved upgrade requests in SQLite.</div>
+      </div>
+      <div class="bar-actions">
+        <button id="refreshAll" class="button-accent">Refresh Dashboard</button>
+        <button id="exportUsers" class="button-ghost">Export Users JSON</button>
+        <button id="exportRequests" class="button-ghost">Export Requests CSV</button>
+      </div>
+    </header>
+
+    <section class="cards">
+      <article class="card">
+        <div class="label">Mock Users</div>
+        <div id="usersCount" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">Saved Requests</div>
+        <div id="requestsCount" class="value">0</div>
+      </article>
+      <article class="card">
+        <div class="label">DB Path</div>
+        <div id="dbPath" class="value mono">-</div>
+      </article>
+      <article class="card">
+        <div class="label">Latest Request</div>
+        <div id="latestRequest" class="value mono">none</div>
+      </article>
+    </section>
+
+    <section class="layout">
+      <aside class="panel">
+        <h2>Add Mock User</h2>
+        <form id="createUserForm">
+          <div class="field">
+            <label for="name">Full Name</label>
+            <input id="name" name="name" required maxlength="120" placeholder="Jan Novak" />
+          </div>
+          <div class="field">
+            <label for="suffix">Rodne Cislo Suffix (4-10 digits)</label>
+            <input id="suffix" name="rodne_cislo_suffix" required maxlength="10" pattern="[0-9]{4,10}" placeholder="1234" />
+          </div>
+          <div class="field">
+            <label for="phone">Phone Number</label>
+            <input id="phone" name="phone_number" value="731527923" maxlength="20" />
+          </div>
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" required placeholder="user@example.com" />
+          </div>
+          <div class="field">
+            <label for="plan">Current Plan (Mbps)</label>
+            <input id="plan" name="current_plan_mbps" type="number" value="100" min="1" />
+          </div>
+          <button type="submit" class="button-accent">Add User</button>
+        </form>
+        <div class="tip">
+          Authentication now uses only <span class="mono">rodne_cislo_suffix</span>.
+          Keep suffix values unique across users.
+        </div>
+        <div id="formStatus" class="status"></div>
+      </aside>
+
+      <div class="grid-stack">
+        <section class="panel">
+          <div class="section-head">
+            <h2>Mock Users</h2>
+            <div class="section-tools">
+              <input id="userFilter" placeholder="Search user, suffix, email..." />
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Customer ID</th>
+                  <th>Name</th>
+                  <th>Suffix</th>
+                  <th>Phone</th>
+                  <th>Email</th>
+                  <th>Plan</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="usersTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Saved Upgrade Requests</h2>
+            <div class="section-tools">
+              <label class="mono" for="limit">Rows</label>
+              <select id="limit">
+                <option value="100">100</option>
+                <option value="300" selected>300</option>
+                <option value="700">700</option>
+                <option value="1500">1500</option>
+              </select>
+              <input id="requestFilter" placeholder="Search request id, customer, status..." />
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Created At</th>
+                  <th>Request ID</th>
+                  <th>Customer</th>
+                  <th>Current</th>
+                  <th>Offered</th>
+                  <th>Status</th>
+                  <th>External Ref</th>
+                </tr>
+              </thead>
+              <tbody id="requestsTbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+    <div id="lastUpdated" class="foot">Last update: never</div>
+  </main>
+
+  <script>
+    const state = {
+      users: [],
+      requests: []
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, options);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || `HTTP ${response.status}`);
+      }
+      return payload;
+    }
+
+    function renderStats(stats) {
+      document.getElementById("usersCount").textContent = stats.users_count ?? 0;
+      document.getElementById("requestsCount").textContent = stats.requests_count ?? 0;
+      document.getElementById("dbPath").textContent = stats.db_path || "-";
+      const latest = stats.latest_request;
+      document.getElementById("latestRequest").textContent = latest
+        ? `${latest.customer_name} (${latest.status})`
+        : "none";
+    }
+
+    function renderUsers() {
+      const filter = document.getElementById("userFilter").value.trim().toLowerCase();
+      const rows = state.users.filter((u) => {
+        const blob = `${u.customer_id} ${u.name} ${u.rodne_cislo_suffix} ${u.email}`.toLowerCase();
+        return blob.includes(filter);
+      });
+      const tbody = document.getElementById("usersTbody");
+      tbody.innerHTML = rows.map((u) => `
+        <tr>
+          <td class="mono">${escapeHtml(u.customer_id)}</td>
+          <td>${escapeHtml(u.name)}</td>
+          <td class="mono">${escapeHtml(u.rodne_cislo_suffix)}</td>
+          <td class="mono">${escapeHtml(u.phone_number)}</td>
+          <td>${escapeHtml(u.email)}</td>
+          <td>${escapeHtml(u.current_plan_mbps)}</td>
+          <td><button class="action-delete" data-delete="${escapeHtml(u.customer_id)}">Delete</button></td>
+        </tr>
+      `).join("");
+    }
+
+    function renderRequests() {
+      const filter = document.getElementById("requestFilter").value.trim().toLowerCase();
+      const rows = state.requests.filter((r) => {
+        const blob = `${r.request_id} ${r.customer_name} ${r.status} ${r.external_reference}`.toLowerCase();
+        return blob.includes(filter);
+      });
+      const tbody = document.getElementById("requestsTbody");
+      tbody.innerHTML = rows.map((r) => `
+        <tr>
+          <td class="mono">${escapeHtml(r.created_at)}</td>
+          <td class="mono">${escapeHtml(r.request_id)}</td>
+          <td>${escapeHtml(r.customer_name)}<div class="mono">${escapeHtml(r.customer_id)}</div></td>
+          <td>${escapeHtml(r.current_plan_mbps)} Mbps</td>
+          <td>${escapeHtml(r.offered_plan_mbps)} Mbps</td>
+          <td>${escapeHtml(r.status)}</td>
+          <td class="mono">${escapeHtml(r.external_reference)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function downloadBlob(content, fileName, mimeType) {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function showFormStatus(message, isError) {
+      const el = document.getElementById("formStatus");
+      el.textContent = message;
+      el.className = `status ${isError ? "bad" : "ok"}`;
+    }
+
+    async function refreshDashboard() {
+      const limit = Number(document.getElementById("limit").value || 300);
+      const payload = await fetchJson(`/admin/api/overview?limit=${encodeURIComponent(limit)}`);
+      state.users = payload.users || [];
+      state.requests = payload.requests || [];
+      renderStats(payload.stats || {});
+      renderUsers();
+      renderRequests();
+      document.getElementById("lastUpdated").textContent = `Last update: ${new Date().toLocaleString()}`;
+    }
+
+    async function onCreateUserSubmit(event) {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const payload = {
+        name: form.name.value,
+        rodne_cislo_suffix: form.rodne_cislo_suffix.value,
+        phone_number: form.phone_number.value,
+        email: form.email.value,
+        current_plan_mbps: Number(form.current_plan_mbps.value)
+      };
+      try {
+        await fetchJson("/admin/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        showFormStatus("User created successfully.", false);
+        form.reset();
+        form.phone_number.value = "731527923";
+        form.current_plan_mbps.value = "100";
+        await refreshDashboard();
+      } catch (error) {
+        showFormStatus(error.message, true);
+      }
+    }
+
+    async function onUsersClick(event) {
+      const customerId = event.target?.dataset?.delete;
+      if (!customerId) {
+        return;
+      }
+      if (!confirm(`Delete user ${customerId}?`)) {
+        return;
+      }
+      try {
+        await fetchJson(`/admin/api/users/${encodeURIComponent(customerId)}`, {
+          method: "DELETE"
+        });
+        await refreshDashboard();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+
+    function exportUsers() {
+      downloadBlob(
+        JSON.stringify(state.users, null, 2),
+        "mock-users.json",
+        "application/json"
+      );
+    }
+
+    function exportRequests() {
+      const header = [
+        "created_at",
+        "request_id",
+        "customer_id",
+        "customer_name",
+        "current_plan_mbps",
+        "offered_plan_mbps",
+        "status",
+        "external_reference"
+      ];
+      const lines = [header.join(",")];
+      for (const row of state.requests) {
+        const values = header.map((key) => {
+          const value = String(row[key] ?? "").replaceAll('"', '""');
+          return `"${value}"`;
+        });
+        lines.push(values.join(","));
+      }
+      downloadBlob(lines.join("\n"), "upgrade-requests.csv", "text/csv;charset=utf-8;");
+    }
+
+    document.getElementById("createUserForm").addEventListener("submit", onCreateUserSubmit);
+    document.getElementById("usersTbody").addEventListener("click", onUsersClick);
+    document.getElementById("userFilter").addEventListener("input", renderUsers);
+    document.getElementById("requestFilter").addEventListener("input", renderRequests);
+    document.getElementById("limit").addEventListener("change", refreshDashboard);
+    document.getElementById("refreshAll").addEventListener("click", refreshDashboard);
+    document.getElementById("exportUsers").addEventListener("click", exportUsers);
+    document.getElementById("exportRequests").addEventListener("click", exportRequests);
+
+    refreshDashboard().catch((error) => {
+      showFormStatus(`Dashboard load failed: ${error.message}`, true);
+    });
+  </script>
+</body>
+</html>
